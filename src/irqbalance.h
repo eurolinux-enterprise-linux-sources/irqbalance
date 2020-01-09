@@ -26,6 +26,7 @@ extern char *classes[];
 extern void parse_cpu_tree(void);
 extern void clear_work_stats(void);
 extern void parse_proc_interrupts(void);
+extern GList* collect_full_irq_list();
 extern void parse_proc_stat(void);
 extern void set_interrupt_count(int number, uint64_t count);
 extern void set_msi_interrupt_numa(int number);
@@ -33,16 +34,13 @@ extern void set_msi_interrupt_numa(int number);
 extern GList *rebalance_irq_list;
 
 void update_migration_status(void);
-void reset_counts(void);
 void dump_workloads(void);
 void sort_irq_list(GList **list);
 void calculate_placement(void);
 void dump_tree(void);
 
 void activate_mappings(void);
-void account_for_nic_stats(void);
 void clear_cpu_tree(void);
-void pci_numa_scan(void);
 
 /*===================NEW BALANCER FUNCTIONS============================*/
 
@@ -63,12 +61,16 @@ enum hp_e {
 
 extern int debug_mode;
 extern int one_shot_mode;
-extern int power_mode;
 extern int need_rescan;
 extern enum hp_e hint_policy;
 extern unsigned long long cycle_count;
 extern unsigned long power_thresh;
+extern unsigned long deepest_cache;
 extern char *banscript;
+extern char *polscript;
+extern cpumask_t banned_cpus;
+extern cpumask_t unbanned_cpus;
+extern long HZ;
 
 /*
  * Numa node access routines
@@ -108,7 +110,8 @@ extern void add_banned_irq(int irq);
 extern void for_each_irq(GList *list, void (*cb)(struct irq_info *info,  void *data), void *data);
 extern struct irq_info *get_irq_info(int irq);
 extern void migrate_irq(GList **from, GList **to, struct irq_info *info);
-extern struct irq_info *add_new_irq(int irq);
+extern struct irq_info *add_new_irq(int irq, struct irq_info *hint);
+extern void force_rebalance_irq(struct irq_info *info, void *data);
 #define irq_numa_node(irq) ((irq)->numa_node)
 
 
@@ -125,6 +128,21 @@ static inline void for_each_object(GList *list, void (*cb)(struct topo_obj *obj,
 		entry = next;
 	}
 }
+
+/*
+ * Logging functions
+ */
+#define TO_SYSLOG	(1 << 0)
+#define TO_CONSOLE	(1 << 1)
+#define TO_ALL		(TO_SYSLOG | TO_CONSOLE)
+
+extern unsigned int log_mask;
+#define log(mask, lvl, fmt, args...) do {\
+	if (log_mask & mask & TO_SYSLOG)\
+		syslog(lvl, fmt, ##args);\
+	if (log_mask & mask & TO_CONSOLE)\
+		printf(fmt, ##args);\
+}while(0)
 
 #endif
 

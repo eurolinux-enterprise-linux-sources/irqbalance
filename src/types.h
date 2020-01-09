@@ -16,15 +16,24 @@
 #define IRQ_OTHER       0
 #define IRQ_LEGACY      1
 #define IRQ_SCSI        2
-#define IRQ_TIMER       3
+#define IRQ_VIDEO       3
 #define IRQ_ETH         4
+#define IRQ_GBETH       5
+#define IRQ_10GBETH     6
+#define IRQ_VIRT_EVENT  7
 
 /*
  * IRQ Types
  */
-#define IRQ_TYPE_LEGACY 0
-#define IRQ_TYPE_MSI	1
-#define IRQ_TYPE_MSIX	2
+#define IRQ_TYPE_LEGACY     0
+#define IRQ_TYPE_MSI        1
+#define IRQ_TYPE_MSIX       2
+#define IRQ_TYPE_VIRT_EVENT 3
+
+/*
+ * IRQ Internal tracking flags
+ */
+#define IRQ_FLAG_BANNED	1
 
 enum obj_type_e {
 	OBJ_TYPE_CPU,
@@ -47,18 +56,19 @@ struct topo_obj {
 };
 
 struct irq_info {
-        int irq;
-        int class;
-        int type;
+	int irq;
+	int class;
+	int type;
 	int level;
-        struct topo_obj *numa_node;
-        cpumask_t cpumask;
-        cpumask_t affinity_hint;
-        uint64_t irq_count;
-        uint64_t last_irq_count;
+	int flags;
+	struct topo_obj *numa_node;
+	cpumask_t cpumask;
+	cpumask_t affinity_hint;
+	uint64_t irq_count;
+	uint64_t last_irq_count;
 	uint64_t load;
-        int moved;
-        struct topo_obj *assigned_obj;
+	int moved;
+struct topo_obj *assigned_obj;
 };
 
 #endif

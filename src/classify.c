@@ -18,11 +18,12 @@ char *classes[] = {
 	"ethernet",
 	"gbit-ethernet",
 	"10gbit-ethernet",
+	"virt-event",
 	0
 };
 
-int map_class_to_level[7] = 
-{ BALANCE_PACKAGE, BALANCE_CACHE, BALANCE_CACHE, BALANCE_NONE, BALANCE_CORE, BALANCE_CORE, BALANCE_CORE };
+int map_class_to_level[8] =
+{ BALANCE_PACKAGE, BALANCE_CACHE, BALANCE_CORE, BALANCE_CORE, BALANCE_CORE, BALANCE_CORE, BALANCE_CORE, BALANCE_CORE };
 
 
 #define MAX_CLASS 0x12
@@ -34,7 +35,7 @@ static short class_codes[MAX_CLASS] = {
 	IRQ_OTHER,
 	IRQ_SCSI,
 	IRQ_ETH,
-	IRQ_OTHER,
+	IRQ_VIDEO,
 	IRQ_OTHER,
 	IRQ_OTHER,
 	IRQ_LEGACY,
@@ -51,8 +52,14 @@ static short class_codes[MAX_CLASS] = {
 	IRQ_OTHER,
 };
 
+struct user_irq_policy {
+	int ban;
+	int level;
+	int numa_node_set;
+	int numa_node;
+};
+
 static GList *interrupts_db;
-static GList *new_irq_list;
 static GList *banned_irqs;
 
 #define SYSDEV_DIR "/sys/bus/pci/devices"
@@ -77,15 +84,26 @@ void add_banned_irq(int irq)
 
 	new = calloc(sizeof(struct irq_info), 1);
 	if (!new) {
-		if (debug_mode)
-			printf("No memory to ban irq %d\n", irq);
+		log(TO_CONSOLE, LOG_WARNING, "No memory to ban irq %d\n", irq);
 		return;
 	}
 
 	new->irq = irq;
+	new->flags |= IRQ_FLAG_BANNED;
 
 	banned_irqs = g_list_append(banned_irqs, new);
 	return;
+}
+
+static int is_banned_irq(int irq)
+{
+	GList *entry;
+	struct irq_info find;
+
+	find.irq = irq;
+
+	entry = g_list_find_custom(banned_irqs, &find, compare_ints);
+	return entry ? 1:0;
 }
 
 			
@@ -94,7 +112,7 @@ void add_banned_irq(int irq)
  * devpath points to the device directory in sysfs for the 
  * related device
  */
-static struct irq_info *add_one_irq_to_db(const char *devpath, int irq)
+static struct irq_info *add_one_irq_to_db(const char *devpath, int irq, struct user_irq_policy *pol)
 {
 	int class = 0;
 	int rc;
@@ -104,6 +122,8 @@ static struct irq_info *add_one_irq_to_db(const char *devpath, int irq)
 	FILE *fd;
 	char *lcpu_mask;
 	GList *entry;
+	ssize_t ret;
+	size_t blen;
 
 	/*
 	 * First check to make sure this isn't a duplicate entry
@@ -111,15 +131,12 @@ static struct irq_info *add_one_irq_to_db(const char *devpath, int irq)
 	find.irq = irq;
 	entry = g_list_find_custom(interrupts_db, &find, compare_ints);
 	if (entry) {
-		if (debug_mode)
-			printf("DROPPING DUPLICATE ENTRY FOR IRQ %d on path %s\n", irq, devpath);
+		log(TO_CONSOLE, LOG_INFO, "DROPPING DUPLICATE ENTRY FOR IRQ %d on path %s\n", irq, devpath);
 		return NULL;
 	}
 
-	entry = g_list_find_custom(banned_irqs, &find, compare_ints);
-	if (entry) {
-		if (debug_mode)
-			printf("SKIPPING BANNED IRQ %d\n", irq);
+	if (is_banned_irq(irq)) {
+		log(TO_ALL, LOG_INFO, "SKIPPING BANNED IRQ %d\n", irq);
 		return NULL;
 	}
 
@@ -156,20 +173,26 @@ static struct irq_info *add_one_irq_to_db(const char *devpath, int irq)
 		goto get_numa_node;
 
 	new->class = class_codes[class];
-	new->level = map_class_to_level[class_codes[class]];
+	if (pol->level >= 0)
+		new->level = pol->level;
+	else
+		new->level = map_class_to_level[class_codes[class]];
 
 get_numa_node:
 	numa_node = -1;
-	sprintf(path, "%s/numa_node", devpath);
-	fd = fopen(path, "r");
-	if (!fd)
-		goto assign_node;
+	if (numa_avail) {
+		sprintf(path, "%s/numa_node", devpath);
+		fd = fopen(path, "r");
+		if (fd) {
+			rc = fscanf(fd, "%d", &numa_node);
+			fclose(fd);
+		}
+	}
 
-	rc = fscanf(fd, "%d", &numa_node);
-	fclose(fd);
-
-assign_node:
-	new->numa_node = get_numa_node(numa_node);
+	if (pol->numa_node_set == 1)
+		new->numa_node = get_numa_node(pol->numa_node);
+	else
+		new->numa_node = get_numa_node(numa_node);
 
 	sprintf(path, "%s/local_cpus", devpath);
 	fd = fopen(path, "r");
@@ -178,13 +201,12 @@ assign_node:
 		goto assign_affinity_hint;
 	}
 	lcpu_mask = NULL;
-	rc = fscanf(fd, "%as", &lcpu_mask);
+	ret = getline(&lcpu_mask, &blen, fd);
 	fclose(fd);
-	if (!lcpu_mask || !rc) {
+	if (ret <= 0) {
 		cpus_setall(new->cpumask);
 	} else {
-		cpumask_parse_user(lcpu_mask, strlen(lcpu_mask),
-				   new->cpumask);
+		cpumask_parse_user(lcpu_mask, ret, new->cpumask);
 	}
 	free(lcpu_mask);
 
@@ -195,17 +217,107 @@ assign_affinity_hint:
 	if (!fd)
 		goto out;
 	lcpu_mask = NULL;
-	rc = fscanf(fd, "%as", &lcpu_mask);
+	ret = getline(&lcpu_mask, &blen, fd);
 	fclose(fd);
-	if (!lcpu_mask)
+	if (ret <= 0)
 		goto out;
-	cpumask_parse_user(lcpu_mask, strlen(lcpu_mask),
-			   new->affinity_hint);
+	cpumask_parse_user(lcpu_mask, ret, new->affinity_hint);
 	free(lcpu_mask);
 out:
-	if (debug_mode)
-		printf("Adding IRQ %d to database\n", irq);
+	log(TO_CONSOLE, LOG_INFO, "Adding IRQ %d to database\n", irq);
 	return new;
+}
+
+static void parse_user_policy_key(char *buf, struct user_irq_policy *pol)
+{
+	char *key, *value, *end;
+	char *levelvals[] = { "none", "package", "cache", "core" };
+	int idx;
+
+	key = buf;
+	value = strchr(buf, '=');
+
+	if (!value) {
+		log(TO_SYSLOG, LOG_WARNING, "Bad format for policy, ignoring: %s\n", buf);
+		return;
+	}
+
+	/* NULL terminate the key and advance value to the start of the value
+	 * string
+	 */
+	*value = '\0';
+	value++;
+	end = strchr(value, '\n');
+	if (end)
+		*end = '\0';
+
+	if (!strcasecmp("ban", key)) {
+		if (!strcasecmp("false", value))
+			pol->ban = 0;
+		else if (!strcasecmp("true", value))
+			pol->ban = 1;
+		else {
+			log(TO_ALL, LOG_WARNING, "Unknown value for ban poilcy: %s\n", value);
+		}
+	} else if (!strcasecmp("balance_level", key)) {
+		for (idx=0; idx<4; idx++) {
+			if (!strcasecmp(levelvals[idx], value))
+				break;
+		}
+
+		if (idx>3)
+			log(TO_ALL, LOG_WARNING, "Bad value for balance_level policy: %s\n", value);
+		else
+			pol->level = idx;
+	} else if (!strcasecmp("numa_node", key)) {
+		idx = strtoul(value, NULL, 10);	
+		if (!get_numa_node(idx)) {
+			log(TO_ALL, LOG_WARNING, "NUMA node %d doesn't exist\n",
+				idx);
+			return;
+		}
+		pol->numa_node = idx;
+		pol->numa_node_set = 1;
+	} else
+		log(TO_ALL, LOG_WARNING, "Unknown key returned, ignoring: %s\n", key);
+	
+}
+
+/*
+ * Calls out to a possibly user defined script to get user assigned poilcy
+ * aspects for a given irq.  A value of -1 in a given field indicates no
+ * policy was given and that system defaults should be used
+ */
+static void get_irq_user_policy(char *path, int irq, struct user_irq_policy *pol)
+{
+	char *cmd;
+	FILE *output;
+	char buffer[128];
+	char *brc;
+
+	memset(pol, -1, sizeof(struct user_irq_policy));
+
+	/* Return defaults if no script was given */
+	if (!polscript)
+		return;
+
+	cmd = alloca(strlen(path)+strlen(polscript)+64);
+	if (!cmd)
+		return;
+
+	sprintf(cmd, "exec %s %s %d", polscript, path, irq);
+	output = popen(cmd, "r");
+	if (!output) {
+		log(TO_ALL, LOG_WARNING, "Unable to execute user policy script %s\n", polscript);
+		return;
+	}
+
+	while(!feof(output)) {
+		brc = fgets(buffer, 128, output);
+		if (brc)
+			parse_user_policy_key(brc, pol);
+	}
+	pclose(output);
 }
 
 static int check_for_irq_ban(char *path, int irq)
@@ -220,25 +332,19 @@ static int check_for_irq_ban(char *path, int irq)
 	if (!cmd)
 		return 0;
 	
-	sprintf(cmd, "%s %s %d",banscript, path, irq);
+	sprintf(cmd, "%s %s %d > /dev/null",banscript, path, irq);
 	rc = system(cmd);
 
 	/*
  	 * The system command itself failed
  	 */
 	if (rc == -1) {
-		if (debug_mode)
-			printf("%s failed, please check the --banscript option\n", cmd);
-		else
-			syslog(LOG_INFO, "%s failed, please check the --banscript option\n", cmd);
+		log(TO_ALL, LOG_WARNING, "%s failed, please check the --banscript option\n", cmd);
 		return 0;
 	}
 
 	if (WEXITSTATUS(rc)) {
-		if (debug_mode)
-			printf("irq %d is baned by %s\n", irq, banscript);
-		else
-			syslog(LOG_INFO, "irq %d is baned by %s\n", irq, banscript);
+		log(TO_ALL, LOG_INFO, "irq %d is baned by %s\n", irq, banscript);
 		return 1;
 	}
 	return 0;
@@ -256,8 +362,11 @@ static void build_one_dev_entry(const char *dirname)
 	int irqnum;
 	struct irq_info *new;
 	char path[PATH_MAX];
+	char devpath[PATH_MAX];
+	struct user_irq_policy pol;
 
 	sprintf(path, "%s/%s/msi_irqs", SYSDEV_DIR, dirname);
+	sprintf(devpath, "%s/%s", SYSDEV_DIR, dirname);
 	
 	msidir = opendir(path);
 
@@ -268,12 +377,15 @@ static void build_one_dev_entry(const char *dirname)
 				break;
 			irqnum = strtol(entry->d_name, NULL, 10);
 			if (irqnum) {
-				sprintf(path, "%s/%s", SYSDEV_DIR, dirname);
-				if (check_for_irq_ban(path, irqnum)) {
+				new = get_irq_info(irqnum);
+				if (new)
+					continue;
+				get_irq_user_policy(devpath, irqnum, &pol);
+				if ((pol.ban == 1) || (check_for_irq_ban(devpath, irqnum))) {
 					add_banned_irq(irqnum);
 					continue;
 				}
-				new = add_one_irq_to_db(path, irqnum);
+				new = add_one_irq_to_db(devpath, irqnum, &pol);
 				if (!new)
 					continue;
 				new->type = IRQ_TYPE_MSIX;
@@ -294,13 +406,16 @@ static void build_one_dev_entry(const char *dirname)
 	 * no pci device has irq 0
 	 */
 	if (irqnum) {
-		sprintf(path, "%s/%s", SYSDEV_DIR, dirname);
-		if (check_for_irq_ban(path, irqnum)) {
+		new = get_irq_info(irqnum);
+		if (new)
+			goto done;
+		get_irq_user_policy(devpath, irqnum, &pol);
+		if ((pol.ban == 1) || (check_for_irq_ban(path, irqnum))) {
 			add_banned_irq(irqnum);
 			goto done;
 		}
 
-		new = add_one_irq_to_db(path, irqnum);
+		new = add_one_irq_to_db(devpath, irqnum, &pol);
 		if (!new)
 			goto done;
 		new->type = IRQ_TYPE_LEGACY;
@@ -321,17 +436,34 @@ void free_irq_db(void)
 	for_each_irq(NULL, free_irq, NULL);
 	g_list_free(interrupts_db);
 	interrupts_db = NULL;
+	for_each_irq(banned_irqs, free_irq, NULL);
+	g_list_free(banned_irqs);
+	banned_irqs = NULL;
+	g_list_free(rebalance_irq_list);
+	rebalance_irq_list = NULL;
 }
+
+static void add_missing_irq(struct irq_info *info, void *unused __attribute__((unused)))
+{
+	struct irq_info *lookup = get_irq_info(info->irq);
+
+	if (!lookup)
+		add_new_irq(info->irq, info);
+	
+}
+
 
 void rebuild_irq_db(void)
 {
-	DIR *devdir = opendir(SYSDEV_DIR);
+	DIR *devdir;
 	struct dirent *entry;
-	GList *gentry;
-	struct irq_info *ninfo, *iinfo;
+	GList *tmp_irqs = NULL;
 
 	free_irq_db();
 		
+	tmp_irqs = collect_full_irq_list();
+
+	devdir = opendir(SYSDEV_DIR);
 	if (!devdir)
 		return;
 
@@ -341,49 +473,49 @@ void rebuild_irq_db(void)
 		if (!entry)
 			break;
 
-	build_one_dev_entry(entry->d_name);
+		build_one_dev_entry(entry->d_name);
 
 	} while (entry != NULL);
 
 	closedir(devdir);
 
-	if (!new_irq_list)
-		return;
-	gentry = g_list_first(new_irq_list);	
-	while(gentry) {
-		ninfo = gentry->data;
-		iinfo = get_irq_info(ninfo->irq);
-		new_irq_list = g_list_remove(gentry, ninfo);
-		if (!iinfo) {
-			if (debug_mode)
-				printf("Adding untracked IRQ %d to database\n", ninfo->irq);
-			interrupts_db = g_list_append(interrupts_db, ninfo);
-		} else 
-			free(ninfo);
 
-		gentry = g_list_first(new_irq_list);
-	}
-	g_list_free(new_irq_list);
-	new_irq_list = NULL;
-		
+	for_each_irq(tmp_irqs, add_missing_irq, NULL);
+
+	g_list_free_full(tmp_irqs, free);
+
 }
 
-struct irq_info *add_new_irq(int irq)
+struct irq_info *add_new_irq(int irq, struct irq_info *hint)
 {
-	struct irq_info *new, *nnew;
+	struct irq_info *new;
+	struct user_irq_policy pol;
 
-	new = calloc(sizeof(struct irq_info), 1);
-	nnew = calloc(sizeof(struct irq_info), 1);
-	if (!new || !nnew)
+	new = get_irq_info(irq);
+	if (new)
 		return NULL;
 
-	new->irq = irq;
-	new->type = IRQ_TYPE_LEGACY;
-	new->class = IRQ_OTHER;
-	new->numa_node = get_numa_node(-1);
-	memcpy(nnew, new, sizeof(struct irq_info));
-	interrupts_db = g_list_append(interrupts_db, new);
-	new_irq_list = g_list_append(new_irq_list, nnew);
+	get_irq_user_policy("/sys", irq, &pol);
+	if (pol.ban == 1) {
+		add_banned_irq(irq);
+		new = get_irq_info(irq);
+	} else
+		new = add_one_irq_to_db("/sys", irq, &pol);
+
+	if (!new) {
+		log(TO_CONSOLE, LOG_WARNING, "add_new_irq: Failed to add irq %d\n", irq);
+		return NULL;
+	}
+
+	/*
+	 * Override some of the new irq defaults here
+	 */
+	if (hint) {
+		new->type = hint->type;
+		new->class = hint->class;
+	}
+
+	new->level = map_class_to_level[new->class];
 	return new;
 }
 
@@ -406,6 +538,10 @@ struct irq_info *get_irq_info(int irq)
 
 	find.irq = irq;
 	entry = g_list_find_custom(interrupts_db, &find, compare_ints);
+
+	if (!entry)
+		entry = g_list_find_custom(banned_irqs, &find, compare_ints);
+
 	return entry ? entry->data : NULL;
 }
 
@@ -416,6 +552,10 @@ void migrate_irq(GList **from, GList **to, struct irq_info *info)
 
 	find.irq = info->irq;
 	entry = g_list_find_custom(*from, &find, compare_ints);
+
+	if (!entry)
+		return;
+
 	tmp = entry->data;
 	*from = g_list_delete_link(*from, entry);
 

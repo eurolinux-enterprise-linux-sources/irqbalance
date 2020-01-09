@@ -33,10 +33,79 @@
 
 #define LINESIZE 4096
 
-extern cpumask_t banned_cpus;
-
 static int proc_int_has_msi = 0;
 static int msi_found_in_sysfs = 0;
+
+GList* collect_full_irq_list()
+{
+	GList *tmp_list = NULL;
+	FILE *file;
+	char *line = NULL;
+	size_t size = 0;
+	char *irq_name, *savedptr, *last_token, *p;
+
+	file = fopen("/proc/interrupts", "r");
+	if (!file)
+		return NULL;
+
+	/* first line is the header we don't need; nuke it */
+	if (getline(&line, &size, file)==0) {
+		free(line);
+		fclose(file);
+		return NULL;
+	}
+
+	while (!feof(file)) {
+		int	 number;
+		struct irq_info *info;
+		char *c;
+		char savedline[1024];
+
+		if (getline(&line, &size, file)==0)
+			break;
+
+		/* lines with letters in front are special, like NMI count. Ignore */
+		c = line;
+		while (isblank(*(c)))
+			c++;
+			
+		if (!(*c>='0' && *c<='9'))
+			break;
+		c = strchr(line, ':');
+		if (!c)
+			continue;
+
+		strncpy(savedline, line, sizeof(savedline));
+
+		irq_name = strtok_r(savedline, " ", &savedptr);
+		last_token = strtok_r(NULL, " ", &savedptr);
+		while ((p = strtok_r(NULL, " ", &savedptr))) {
+			irq_name = last_token;
+			last_token = p;
+		}
+
+		*c = 0;
+		c++;
+		number = strtoul(line, NULL, 10);
+
+		info = calloc(sizeof(struct irq_info), 1);
+		if (info) {
+			info->irq = number;
+			if (strstr(irq_name, "xen-dyn-event") != NULL) {
+				info->type = IRQ_TYPE_VIRT_EVENT;
+				info->class = IRQ_VIRT_EVENT;
+			} else {
+				info->type = IRQ_TYPE_LEGACY;
+				info->class = IRQ_OTHER;
+			} 
+			tmp_list = g_list_append(tmp_list, info);
+		}
+
+	}
+	fclose(file);
+	free(line);
+	return tmp_list;
+}
 
 void parse_proc_interrupts(void)
 {
@@ -61,6 +130,7 @@ void parse_proc_interrupts(void)
 		uint64_t count;
 		char *c, *c2;
 		struct irq_info *info;
+		char savedline[1024];
 
 		if (getline(&line, &size, file)==0)
 			break;
@@ -79,15 +149,17 @@ void parse_proc_interrupts(void)
 		c = strchr(line, ':');
 		if (!c)
 			continue;
+
+		strncpy(savedline, line, sizeof(savedline));
+
 		*c = 0;
 		c++;
 		number = strtoul(line, NULL, 10);
+
 		info = get_irq_info(number);
 		if (!info) {
-			if (!cycle_count)
-				continue;
 			need_rescan = 1;
-			info = add_new_irq(number);
+			break;
 		}
 
 		count = 0;
@@ -103,8 +175,10 @@ void parse_proc_interrupts(void)
 			c=c2;
 			cpunr++;
 		}
-		if (cpunr != core_count) 
+		if (cpunr != core_count) {
 			need_rescan = 1;
+			break;
+		}
 
 		info->last_irq_count = info->irq_count;		
 		info->irq_count = count;
@@ -113,10 +187,10 @@ void parse_proc_interrupts(void)
 		if ((info->type == IRQ_TYPE_MSI) || (info->type == IRQ_TYPE_MSIX))
 			msi_found_in_sysfs = 1;
 	}		
-	if ((proc_int_has_msi) && (!msi_found_in_sysfs)) {
-		syslog(LOG_WARNING, "WARNING: MSI interrupts found in /proc/interrupts\n");
-		syslog(LOG_WARNING, "But none found in sysfs, you need to update your kernel\n");
-		syslog(LOG_WARNING, "Until then, IRQs will be improperly classified\n");
+	if ((proc_int_has_msi) && (!msi_found_in_sysfs) && (!need_rescan)) {
+		log(TO_ALL, LOG_WARNING, "WARNING: MSI interrupts found in /proc/interrupts\n");
+		log(TO_ALL, LOG_WARNING, "But none found in sysfs, you need to update your kernel\n");
+		log(TO_ALL, LOG_WARNING, "Until then, IRQs will be improperly classified\n");
 		/*
  		 * Set msi_foun_in_sysfs, so we don't get this error constantly
  		 */
@@ -198,18 +272,18 @@ void parse_proc_stat(void)
 	size_t size = 0;
 	int cpunr, rc, cpucount;
 	struct topo_obj *cpu;
-	int irq_load, softirq_load;
+	unsigned long long irq_load, softirq_load;
 
 	file = fopen("/proc/stat", "r");
 	if (!file) {
-		syslog(LOG_WARNING, "WARNING cant open /proc/stat.  balacing is broken\n");
+		log(TO_ALL, LOG_WARNING, "WARNING cant open /proc/stat.  balacing is broken\n");
 		return;
 	}
 
 	/* first line is the header we don't need; nuke it */
 	if (getline(&line, &size, file)==0) {
 		free(line);
-		syslog(LOG_WARNING, "WARNING read /proc/stat. balancing is broken\n");
+		log(TO_ALL, LOG_WARNING, "WARNING read /proc/stat. balancing is broken\n");
 		fclose(file);
 		return;
 	}
@@ -227,7 +301,7 @@ void parse_proc_stat(void)
 		if (cpu_isset(cpunr, banned_cpus))
 			continue;
 
-		rc = sscanf(line, "%*s %*d %*d %*d %*d %*d %d %d", &irq_load, &softirq_load);
+		rc = sscanf(line, "%*s %*u %*u %*u %*u %*u %llu %llu", &irq_load, &softirq_load);
 		if (rc < 2)
 			break;	
 
@@ -245,12 +319,12 @@ void parse_proc_stat(void)
 		if (cycle_count) {
 			cpu->load = (irq_load + softirq_load) - (cpu->last_load);
 			/*
-			 * the [soft]irq_load values are in jiffies, which are
-			 * units of 10ms, multiply by 1000 to convert that to
-			 * 1/10 milliseconds.  This give us a better integer
-			 * distribution of load between irqs
+			 * the [soft]irq_load values are in jiffies, with
+			 * HZ jiffies per second.  Convert the load to nanoseconds
+			 * to get a better integer resolution of nanoseconds per
+			 * interrupt.
 			 */
-			cpu->load *= 1000;
+			cpu->load *= NSEC_PER_SEC/HZ;
 		}
 		cpu->last_load = (irq_load + softirq_load);
 	}
@@ -258,7 +332,7 @@ void parse_proc_stat(void)
 	fclose(file);
 	free(line);
 	if (cpucount != get_cpu_count()) {
-		syslog(LOG_WARNING, "WARNING, didn't collect load info for all cpus, balancing is broken\n");
+		log(TO_ALL, LOG_WARNING, "WARNING, didn't collect load info for all cpus, balancing is broken\n");
 		return;
 	}
 

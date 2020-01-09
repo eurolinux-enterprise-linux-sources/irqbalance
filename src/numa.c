@@ -55,23 +55,28 @@ static void add_one_node(const char *nodename)
 {
 	char path[PATH_MAX];
 	struct topo_obj *new;
-	char *cpustr;
+	char *cpustr = NULL;
 	FILE *f;
-	int ret;
+	ssize_t ret;
+	size_t blen;
 
 	new = calloc(1, sizeof(struct topo_obj));
 	if (!new)
 		return;
 	sprintf(path, "%s/%s/cpumap", SYSFS_NODE_PATH, nodename);
 	f = fopen(path, "r");
+	if (!f) {
+		free(new);
+		return;
+	}
 	if (ferror(f)) {
 		cpus_clear(new->mask);
 	} else {
-		ret = fscanf(f, "%as", &cpustr);
-		if (!ret || !cpustr) {
+		ret = getline(&cpustr, &blen, f);
+		if (ret <= 0) {
 			cpus_clear(new->mask);
 		} else {
-			cpumask_parse_user(cpustr, strlen(cpustr), new->mask);
+			cpumask_parse_user(cpustr, ret, new->mask);
 			free(cpustr);
 		}
 	}
@@ -84,7 +89,7 @@ static void add_one_node(const char *nodename)
 
 void build_numa_node_list(void)
 {
-	DIR *dir = opendir(SYSFS_NODE_PATH);
+	DIR *dir;
 	struct dirent *entry;
 
 	/*
@@ -99,6 +104,10 @@ void build_numa_node_list(void)
 	 */
 	numa_nodes = g_list_append(numa_nodes, &unspecified_node);
 
+	if (!numa_avail)
+		return;
+
+	dir = opendir(SYSFS_NODE_PATH);
 	if (!dir)
 		return;
 
@@ -144,8 +153,7 @@ void add_package_to_node(struct topo_obj *p, int nodeid)
 	node = get_numa_node(nodeid);
 
 	if (!node) {
-		if (debug_mode)
-			printf("Could not find numa node for node id %d\n", nodeid);
+		log(TO_CONSOLE, LOG_INFO, "Could not find numa node for node id %d\n", nodeid);
 		return;
 	}
 
@@ -160,10 +168,10 @@ void dump_numa_node_info(struct topo_obj *d, void *unused __attribute__((unused)
 {
 	char buffer[4096];
 
-	printf("NUMA NODE NUMBER: %d\n", d->number);
+	log(TO_CONSOLE, LOG_INFO, "NUMA NODE NUMBER: %d\n", d->number);
 	cpumask_scnprintf(buffer, 4096, d->mask); 
-	printf("LOCAL CPU MASK: %s\n", buffer);
-	printf("\n");
+	log(TO_CONSOLE, LOG_INFO, "LOCAL CPU MASK: %s\n", buffer);
+	log(TO_CONSOLE, LOG_INFO, "\n");
 }
 
 struct topo_obj *get_numa_node(int nodeid)

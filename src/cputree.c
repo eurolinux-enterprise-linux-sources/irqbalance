@@ -31,6 +31,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <dirent.h>
 
 #include <glib.h>
@@ -55,10 +56,10 @@ cpumask_t cpu_possible_map;
    it's convenient to have the complement of banned_cpus available so that 
    the AND operator can be used to mask out unwanted cpus
 */
-static cpumask_t unbanned_cpus;
+cpumask_t unbanned_cpus;
 
 static struct topo_obj* add_cache_domain_to_package(struct topo_obj *cache, 
-						    cpumask_t package_mask)
+						    int packageid, cpumask_t package_mask)
 {
 	GList *entry;
 	struct topo_obj *package;
@@ -68,8 +69,11 @@ static struct topo_obj* add_cache_domain_to_package(struct topo_obj *cache,
 
 	while (entry) {
 		package = entry->data;
-		if (cpus_equal(package_mask, package->mask))
+		if (cpus_equal(package_mask, package->mask)) {
+			if (packageid != package->number)
+				log(TO_ALL, LOG_WARNING, "package_mask with different physical_package_id found!\n");
 			break;
+		}
 		entry = g_list_next(entry);
 	}
 
@@ -80,6 +84,7 @@ static struct topo_obj* add_cache_domain_to_package(struct topo_obj *cache,
 		package->mask = package_mask;
 		package->obj_type = OBJ_TYPE_PACKAGE;
 		package->obj_type_list = &packages;
+		package->number = packageid;
 		packages = g_list_append(packages, package);
 		package_count++;
 	}
@@ -154,6 +159,8 @@ static void do_one_cpu(char *path)
 	DIR *dir;
 	struct dirent *entry;
 	int nodeid;
+	int packageid = 0;
+	unsigned int max_cache_index, cache_index, cache_stat;
 
 	/* skip offline cpus */
 	snprintf(new_path, PATH_MAX, "%s/online", path);
@@ -210,55 +217,74 @@ static void do_one_cpu(char *path)
 		fclose(file);
 		free(line);
 	}
-
-	/* try to read the cache mask; if it doesn't exist assume solitary */
-	/* We want the deepest cache level available so try index1 first, then index2 */
-	cpu_set(cpu->number, cache_mask);
-	snprintf(new_path, PATH_MAX, "%s/cache/index1/shared_cpu_map", path);
+	/* try to read the package id */
+	snprintf(new_path, PATH_MAX, "%s/topology/physical_package_id", path);
 	file = fopen(new_path, "r");
 	if (file) {
 		char *line = NULL;
 		size_t size = 0;
-		if (getline(&line, &size, file)) 
-			cpumask_parse_user(line, strlen(line), cache_mask);
+		if (getline(&line, &size, file))
+			packageid = strtoul(line, NULL, 10);
 		fclose(file);
 		free(line);
 	}
-	snprintf(new_path, PATH_MAX, "%s/cache/index2/shared_cpu_map", path);
-	file = fopen(new_path, "r");
-	if (file) {
-		char *line = NULL;
-		size_t size = 0;
-		if (getline(&line, &size, file)) 
-			cpumask_parse_user(line, strlen(line), cache_mask);
-		fclose(file);
-		free(line);
+
+	/* try to read the cache mask; if it doesn't exist assume solitary */
+	/* We want the deepest cache level available */
+	cpu_set(cpu->number, cache_mask);
+	max_cache_index = 0;
+	cache_index = 1;
+	cache_stat = 0;
+	do {
+		struct stat sb;
+		snprintf(new_path, PATH_MAX, "%s/cache/index%d/shared_cpu_map", path, cache_index);
+		cache_stat = stat(new_path, &sb);
+		if (!cache_stat) {
+			max_cache_index = cache_index;
+			if (max_cache_index == deepest_cache)
+				break;
+			cache_index ++;
+		}
+	} while(!cache_stat);
+
+	if (max_cache_index > 0) {
+		snprintf(new_path, PATH_MAX, "%s/cache/index%d/shared_cpu_map", path, max_cache_index);
+		file = fopen(new_path, "r");
+		if (file) {
+			char *line = NULL;
+			size_t size = 0;
+			if (getline(&line, &size, file))
+				cpumask_parse_user(line, strlen(line), cache_mask);
+			fclose(file);
+			free(line);
+		}
 	}
 
 	nodeid=-1;
-	dir = opendir(path);
-	do {
-		entry = readdir(dir);
-		if (!entry)
-			break;
-		if (strstr(entry->d_name, "node")) {
-			nodeid = strtoul(&entry->d_name[4], NULL, 10);
-			break;
-		}
-	} while (entry);
-	closedir(dir);
+	if (numa_avail) {
+		dir = opendir(path);
+		do {
+			entry = readdir(dir);
+			if (!entry)
+				break;
+			if (strstr(entry->d_name, "node")) {
+				nodeid = strtoul(&entry->d_name[4], NULL, 10);
+				break;
+			}
+		} while (entry);
+		closedir(dir);
+	}
 
-	cache = add_cpu_to_cache_domain(cpu, cache_mask);
-	package = add_cache_domain_to_package(cache, package_mask);
-	add_package_to_node(package, nodeid);	
- 
-	/* 
+	/*
 	   blank out the banned cpus from the various masks so that interrupts
 	   will never be told to go there
 	 */
-	cpus_and(cpu_cache_domain(cpu)->mask, cpu_cache_domain(cpu)->mask, unbanned_cpus);
-	cpus_and(cpu_package(cpu)->mask, cpu_package(cpu)->mask, unbanned_cpus);
-	cpus_and(cpu->mask, cpu->mask, unbanned_cpus);
+	cpus_and(cache_mask, cache_mask, unbanned_cpus);
+	cpus_and(package_mask, package_mask, unbanned_cpus);
+
+	cache = add_cpu_to_cache_domain(cpu, cache_mask);
+	package = add_cache_domain_to_package(cache, packageid, package_mask);
+	add_package_to_node(package, nodeid);
 
 	cpu->obj_type_list = &cpus;
 	cpus = g_list_append(cpus, cpu);
@@ -269,14 +295,16 @@ static void dump_irq(struct irq_info *info, void *data)
 {
 	int spaces = (long int)data;
 	int i;
-	for (i=0; i<spaces; i++) printf(" ");
-	printf("Interrupt %i node_num is %d (%s/%u) \n", info->irq, irq_numa_node(info)->number, classes[info->class], (unsigned int)info->load);
+	for (i=0; i<spaces; i++) log(TO_CONSOLE, LOG_INFO, " ");
+	log(TO_CONSOLE, LOG_INFO, "Interrupt %i node_num is %d (%s/%u) \n",
+	    info->irq, irq_numa_node(info)->number, classes[info->class], (unsigned int)info->load);
 }
 
 static void dump_topo_obj(struct topo_obj *d, void *data __attribute__((unused)))
 {
 	struct topo_obj *c = (struct topo_obj *)d;
-	printf("                CPU number %i  numa_node is %d (load %lu)\n", c->number, cpu_numa_node(c)->number , (unsigned long)c->load);
+	log(TO_CONSOLE, LOG_INFO, "                CPU number %i  numa_node is %d (load %lu)\n",
+	    c->number, cpu_numa_node(c)->number , (unsigned long)c->load);
 	if (c->interrupts)
 		for_each_irq(c->interrupts, dump_irq, (void *)18);
 }
@@ -285,7 +313,8 @@ static void dump_cache_domain(struct topo_obj *d, void *data)
 {
 	char *buffer = data;
 	cpumask_scnprintf(buffer, 4095, d->mask);
-	printf("        Cache domain %i:  numa_node is %d cpu mask is %s  (load %lu) \n", d->number, cache_domain_numa_node(d)->number, buffer, (unsigned long)d->load);
+	log(TO_CONSOLE, LOG_INFO, "        Cache domain %i:  numa_node is %d cpu mask is %s  (load %lu) \n",
+	    d->number, cache_domain_numa_node(d)->number, buffer, (unsigned long)d->load);
 	if (d->children)
 		for_each_object(d->children, dump_topo_obj, NULL);
 	if (g_list_length(d->interrupts) > 0)
@@ -296,7 +325,8 @@ static void dump_package(struct topo_obj *d, void *data)
 {
 	char *buffer = data;
 	cpumask_scnprintf(buffer, 4096, d->mask);
-	printf("Package %i:  numa_node is %d cpu mask is %s (load %lu)\n", d->number, package_numa_node(d)->number, buffer, (unsigned long)d->load);
+	log(TO_CONSOLE, LOG_INFO, "Package %i:  numa_node is %d cpu mask is %s (load %lu)\n",
+	    d->number, package_numa_node(d)->number, buffer, (unsigned long)d->load);
 	if (d->children)
 		for_each_object(d->children, dump_cache_domain, buffer);
 	if (g_list_length(d->interrupts) > 0)

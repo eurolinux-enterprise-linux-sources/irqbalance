@@ -29,8 +29,6 @@
 #include "irqbalance.h"
 
 
-int power_mode;
-
 GList *rebalance_irq_list;
 
 struct obj_placement {
@@ -115,7 +113,7 @@ static void find_best_object_for_irq(struct irq_info *info, void *data)
 	place.info = info;
 	place.best = NULL;
 	place.least_irqs = NULL;
-	place.best_cost = INT_MAX;
+	place.best_cost = ULLONG_MAX;
 
 	for_each_object(d->children, find_best_object, &place);
 
@@ -153,7 +151,7 @@ static void place_irq_in_node(struct irq_info *info, void *data __attribute__((u
 		return;
 	}
 
-	place.best_cost = INT_MAX;
+	place.best_cost = ULLONG_MAX;
 	place.best = NULL;
 	place.least_irqs = NULL;
 	place.info = info;
@@ -172,7 +170,7 @@ static void place_irq_in_node(struct irq_info *info, void *data __attribute__((u
 static void validate_irq(struct irq_info *info, void *data)
 {
 	if (info->assigned_obj != data)
-		printf("object validation error: irq %d is wrong, points to %p, should be %p\n",
+		log(TO_CONSOLE, LOG_INFO, "object validation error: irq %d is wrong, points to %p, should be %p\n",
 			info->irq, info->assigned_obj, data);
 }
 

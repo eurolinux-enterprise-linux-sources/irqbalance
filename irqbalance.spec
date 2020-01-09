@@ -1,16 +1,14 @@
 Summary:        IRQ balancing daemon
 Name:           irqbalance
-Version:        1.0.4
-Release:        10%{?dist}
+Version:        1.0.7
+Release:        5%{?dist}
 Epoch:          2
 Group:          System Environment/Base
 License:        GPLv2
-Url:            http://irqbalance.org/
-Source0:        http://www.irqbalance.org/releases/irqbalance-%{version}.tar.bz2
+Url:            https://github.com/Irqbalance/irqbalance
+Source0:        https://github.com/Irqbalance/irqbalance/archive/v%{version}.tar.gz
 Source1:        irqbalance.init
 Source2:        irqbalance.sysconfig
-Source3:        irqbalance.1
-#Buildroot:      %(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
 BuildRequires:  autoconf automake libtool libcap-ng numactl-devel
 Requires(post): chkconfig
 Requires(postun):chkconfig
@@ -23,16 +21,21 @@ Requires:       kernel >= 2.6.32-358.2.1
 
 %global _hardened_build 1
 
-Patch1: 0001-glib-local-ad-call-for-g_list_remove.patch
-Patch2: 0002-security-compile-flags.patch
-Patch3: irqbalance-1.0.4-cpuhotplug-segfault.patch
-Patch4: irqbalance-1.0.4-banned-cpus-fix.patch
-Patch5: irqbalance-1.0.4-affinity_hint.patch
-Patch6: irqbalance-1.0.4-hardening.patch
-Patch7: irqbalance-1.0.4-add_packageid.patch
-Patch8: irqbalance-1.0.4-placement_fix.patch
-Patch9: irqbalance-1.0.4-deepestcache_bits.patch
-Patch10: irqbalance-1.0.4-debug_output.patch
+Patch1: irqbalance-1.0.7-security-compile-flags.patch
+Patch2: irqbalance-1.0.7-banned-cpus-fix.patch
+Patch3: irqbalance-1.0.7-affinity_hint.patch
+Patch4: irqbalance-1.0.7-debug_output.patch
+Patch5: irqbalance-1.0.7-deepestcache_bits.patch
+Patch6: irqbalance-1.0.8-removing-unused-variable-cache_stat.patch
+Patch7: irqbalance-1.0.8-Manpage-note-about-ignoring-of-pid-in-some-cases.patch
+Patch8: irqbalance-1.0.8-irqbalance-signal-handling-tuning.patch
+Patch9: irqbalance-1.0.8-Warning-when-irqbalance-hasn-t-root-privileges.patch
+Patch10: irqbalance-1.0.7-manpage-hostname.patch
+Patch11: irqbalance-1.0.8-classify-mem-leak.patch
+Patch12: irqbalance-1.0.8-polscript-doc.patch
+Patch13: irqbalance-1.0.7-banscript-enable.patch
+Patch14: irqbalance-1.0.7-banscript-docs.patch
+Patch15: irqbalance-1.0.8-separate-banned-irqs.patch
 
 %description
 irqbalance is a daemon that evenly distributes IRQ load across
@@ -50,6 +53,11 @@ multiple CPUs for enhanced performance.
 %patch8 -p1
 %patch9 -p1
 %patch10 -p1
+%patch11 -p1
+%patch12 -p1
+%patch13 -p1
+%patch14 -p1
+%patch15 -p1
 
 %build
 sh ./autogen.sh
@@ -60,9 +68,7 @@ CFLAGS="%{optflags}" make %{?_smp_mflags}
 install -D -p -m 0755 %{name} %{buildroot}%{_sbindir}/%{name}
 install -D -p -m 0755 %{SOURCE1} %{buildroot}%{_initrddir}/%{name}
 install -D -p -m 0644 %{SOURCE2} %{buildroot}%{_sysconfdir}/sysconfig/%{name}
-
-install -d %{buildroot}%{_mandir}/man1/
-install -p -m 0644 %{SOURCE3} %{buildroot}%{_mandir}/man1/
+install -D -p -m 0644 %{name}.1 %{buildroot}%{_mandir}/man1/%{name}.1
 
 %clean
 rm -rf %{buildroot}
@@ -72,7 +78,7 @@ rm -rf %{buildroot}
 %doc COPYING AUTHORS
 %{_sbindir}/irqbalance
 %{_initrddir}/irqbalance
-%{_mandir}/man1/*
+%{_mandir}/man1/%{name}.1*
 %config(noreplace) %{_sysconfdir}/sysconfig/irqbalance
 
 %preun
@@ -89,6 +95,26 @@ exit 0
 
 
 %changelog
+* Thu May 28 2015 Petr Holasek <pholasek@redhat.com> - 2:1.0.7-5
+- Broken banirq handling after rebase fixed (bz 1181720)
+
+* Tue Apr 07 2015 Petr Holasek <pholasek@redhat.com> - 2:1.0.7-4
+- Banscript option docs renewed (bz 1181720)
+
+* Wed Apr 01 2015 Petr Holasek <pholasek@redhat.com> - 2:1.0.7-3
+- Banscript option re-enabled (bz 1178903)
+
+* Tue Jan 20 2015 Petr Holasek <pholasek@redhat.com> - 2:1.0.7-2
+- Unused variable removed (bz 1119404)
+- Warning when started as non-root (bz 749651)
+- More robust signal handling (bz 1158932)
+- Fixed manpage hostname (bz 1162247)
+- Fixed memleak (bz 1178247)
+- Fixed help message typo (bz 1178903)
+
+* Mon Jan 19 2015 Petr Holasek <pholasek@redhat.com> - 2:1.0.7-1
+- Rebase to 1.0.7 (bz 1181720)
+
 * Thu May 29 2014 Petr Holasek <pholasek@redhat.com> - 2:1.0.4-10
 - Minor source hardening (bz 878001)
 - Migrating algorithm fix (bz 1031230)

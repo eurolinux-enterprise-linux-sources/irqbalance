@@ -47,12 +47,15 @@ int debug_mode;
 int foreground_mode;
 int numa_avail;
 int need_rescan;
-extern cpumask_t banned_cpus;
+unsigned int log_mask = TO_ALL;
 enum hp_e hint_policy = HINT_POLICY_SUBSET;
 unsigned long power_thresh = ULONG_MAX;
+unsigned long deepest_cache = ULONG_MAX;
 unsigned long long cycle_count = 0;
 char *pidfile = NULL;
 char *banscript = NULL;
+char *polscript = NULL;
+long HZ;
 
 void sleep_approx(int seconds)
 {
@@ -77,14 +80,16 @@ struct option lopts[] = {
 	{"powerthresh", 1, NULL, 'p'},
 	{"banirq", 1 , NULL, 'i'},
 	{"banscript", 1, NULL, 'b'},
+	{"deepestcache", 1, NULL, 'c'},
+	{"policyscript", 1, NULL, 'l'},
 	{"pid", 1, NULL, 's'},
 	{0, 0, 0, 0}
 };
 
 static void usage(void)
 {
-	printf("irqbalance [--oneshot | -o] [--debug | -d] [--foreground | -f] [--hintpolicy= | -h [exact|subset|ignore]]\n");
-	printf("	[--powerthresh= | -p <off> | <n>] [--banirq= | -i <n>]\n");
+	log(TO_CONSOLE, LOG_INFO, "irqbalance [--oneshot | -o] [--debug | -d] [--foreground | -f] [--hintpolicy= | -h [exact|subset|ignore]]\n");
+	log(TO_CONSOLE, LOG_INFO, "	[--powerthresh= | -p <off> | <n>] [--banirq= | -i <n>] [--policyscript=<script>] [--pid= | -s <file>] [--deepestcache= | -c <n>]\n");
 }
 
 static void parse_command_line(int argc, char **argv)
@@ -94,7 +99,7 @@ static void parse_command_line(int argc, char **argv)
 	unsigned long val;
 
 	while ((opt = getopt_long(argc, argv,
-		"odfh:i:p:s:b:",
+		"odfh:i:p:s:c:b:l:",
 		lopts, &longind)) != -1) {
 
 		switch(opt) {
@@ -103,7 +108,23 @@ static void parse_command_line(int argc, char **argv)
 				exit(1);
 				break;
 			case 'b':
+#ifndef INCLUDE_BANSCRIPT
+				/*
+				 * Banscript is no longer supported unless
+				 * explicitly enabled
+				 */
+				log(TO_CONSOLE, LOG_INFO, "--banscript is not supported on this version of irqbalance, please use --polscript");
+				usage();
+				exit(1);
+#endif
 				banscript = strdup(optarg);
+				break;
+			case 'c':
+				deepest_cache = strtoul(optarg, NULL, 10);
+				if (deepest_cache == ULONG_MAX || deepest_cache < 1) {
+					usage();
+					exit(1);
+				}
 				break;
 			case 'd':
 				debug_mode=1;
@@ -131,6 +152,9 @@ static void parse_command_line(int argc, char **argv)
 					exit(1);
 				}
 				add_banned_irq((int)val);
+				break;
+			case 'l':
+				polscript = strdup(optarg);
 				break;
 			case 'p':
 				if (!strncmp(optarg, "off", strlen(optarg)))
@@ -185,7 +209,7 @@ static void dump_object_tree(void)
 	for_each_object(numa_nodes, dump_numa_node_info, NULL);
 }
 
-static void force_rebalance_irq(struct irq_info *info, void *data __attribute__((unused)))
+void force_rebalance_irq(struct irq_info *info, void *data __attribute__((unused)))
 {
 	if (info->level == BALANCE_NONE)
 		return;
@@ -206,6 +230,7 @@ static void handler(int signum)
 
 static void force_rescan(int signum)
 {
+	(void)signum;
 	if (cycle_count)
 		need_rescan = 1;
 }
@@ -242,11 +267,27 @@ int main(int argc, char** argv)
 	if (getenv("IRQBALANCE_DEBUG")) 
 		debug_mode=1;
 
+	/*
+ 	 * If we are't in debug mode, don't dump anything to the console
+ 	 * note that everything goes to the console before we check this
+ 	 */
+	if (!debug_mode)
+		log_mask &= ~TO_CONSOLE;
+
 	if (numa_available() > -1) {
 		numa_avail = 1;
-	} else {
-		if (debug_mode)
-			printf("This machine seems not NUMA capable.\n");
+	} else 
+		log(TO_CONSOLE, LOG_INFO, "This machine seems not NUMA capable.\n");
+
+	if (banscript) {
+		char *note = "Please note that --banscript is deprecated, please use --policyscript instead";
+		log(TO_ALL, LOG_WARNING, "%s\n", note);
+	}
+
+	HZ = sysconf(_SC_CLK_TCK);
+	if (HZ == -1) {
+		log(TO_ALL, LOG_WARNING, "Unable to determin HZ defaulting to 100\n");
+		HZ = 100;
 	}
 
 	action.sa_handler = handler;
@@ -261,18 +302,12 @@ int main(int argc, char** argv)
 
 	/* On single core UP systems irqbalance obviously has no work to do */
 	if (core_count<2) {
-		char *msg = "Balaincing is ineffective on systems with a "
-			    "single cache domain.  Shutting down\n";
+		char *msg = "Balancing is ineffective on systems with a "
+			    "single cpu.  Shutting down\n";
 
-		if (debug_mode)
-			printf("%s", msg);
-		else
-			syslog(LOG_INFO, "%s", msg);
+		log(TO_ALL, LOG_WARNING, "%s", msg);
 		exit(EXIT_SUCCESS);
 	}
-	/* On dual core/hyperthreading shared cache systems just do a one shot setup */
-	if (cache_domain_count==1)
-		one_shot_mode = 1;
 
 	if (!foreground_mode) {
 		int pidfd = -1;
@@ -309,8 +344,7 @@ int main(int argc, char** argv)
 
 	while (keep_going) {
 		sleep_approx(SLEEP_INTERVAL);
-		if (debug_mode)
-			printf("\n\n\n-----------------------------------------------------------------------------\n");
+		log(TO_CONSOLE, LOG_INFO, "\n\n\n-----------------------------------------------------------------------------\n");
 
 
 		clear_work_stats();
@@ -320,11 +354,8 @@ int main(int argc, char** argv)
 		/* cope with cpu hotplug -- detected during /proc/interrupts parsing */
 		if (need_rescan) {
 			need_rescan = 0;
-			/* if there's a hotplug event we better turn off power mode for a bit until things settle */
-			power_mode = 0;
-			if (debug_mode)
-				printf("Rescanning cpu topology \n");
-			reset_counts();
+			cycle_count = 0;
+			log(TO_CONSOLE, LOG_INFO, "Rescanning cpu topology \n");
 			clear_work_stats();
 
 			free_object_tree();
@@ -336,7 +367,6 @@ int main(int argc, char** argv)
 			clear_work_stats();
 			parse_proc_interrupts();
 			parse_proc_stat();
-			cycle_count = 0;
 		} 
 
 		if (cycle_count)	
