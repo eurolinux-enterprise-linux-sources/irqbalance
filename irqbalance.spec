@@ -1,7 +1,7 @@
 Summary:        IRQ balancing daemon
 Name:           irqbalance
 Version:        1.0.7
-Release:        8%{?dist}
+Release:        8%{?dist}.1
 Epoch:          2
 Group:          System Environment/Base
 License:        GPLv2
@@ -39,7 +39,7 @@ Patch15: irqbalance-1.0.8-separate-banned-irqs.patch
 Patch16: irqbalance-1.0.8-fix-cpulist_parse-definition-to-match-bitmap_parseli.patch
 Patch17: irqbalance-1.0.8-import-__bitmap_parselist-from-Linux-kernel.patch
 Patch18: irqbalance-1.0.8-parse-isolcpus-from-proc-cmdline-to-set-up-banned_cp.patch
-
+Patch19: irqbalance-1.0.8-Balance-correctly-IRQs-reappearing.patch
 
 %description
 irqbalance is a daemon that evenly distributes IRQ load across
@@ -65,6 +65,7 @@ multiple CPUs for enhanced performance.
 %patch16 -p1
 %patch17 -p1
 %patch18 -p1
+%patch19 -p1
 
 %build
 sh ./autogen.sh
@@ -104,6 +105,10 @@ exit 0
 
 
 %changelog
+* Fri Feb 02 2018 Petr Oros <poros@redhat.com> - 2:1.0.7-8.1
+- Balance correctly IRQs reappearing
+- Resolves: #1541290
+
 * Tue Feb 02 2016 Petr Holasek <pholasek@redhat.com> - 2:1.0.7-8
 - Explicit dependency on newer glib2 added (bz 1302903)
 
