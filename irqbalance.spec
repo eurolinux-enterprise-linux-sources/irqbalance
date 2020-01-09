@@ -1,7 +1,7 @@
 Summary:        IRQ balancing daemon
 Name:           irqbalance
 Version:        1.0.7
-Release:        8%{?dist}.1
+Release:        9%{?dist}
 Epoch:          2
 Group:          System Environment/Base
 License:        GPLv2
@@ -105,9 +105,9 @@ exit 0
 
 
 %changelog
-* Fri Feb 02 2018 Petr Oros <poros@redhat.com> - 2:1.0.7-8.1
+* Thu Feb 01 2018 Petr Oros <poros@redhat.com> - 2:1.0.7-9
 - Balance correctly IRQs reappearing
-- Resolves: #1541290
+- Resolves: #1536370
 
 * Tue Feb 02 2016 Petr Holasek <pholasek@redhat.com> - 2:1.0.7-8
 - Explicit dependency on newer glib2 added (bz 1302903)
