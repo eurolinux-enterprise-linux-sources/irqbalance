@@ -1,7 +1,7 @@
 Summary:        IRQ balancing daemon
 Name:           irqbalance
 Version:        1.0.7
-Release:        5%{?dist}
+Release:        8%{?dist}
 Epoch:          2
 Group:          System Environment/Base
 License:        GPLv2
@@ -17,7 +17,7 @@ Requires(preun):chkconfig
 ExclusiveArch:  %{ix86} x86_64 ia64 ppc ppc64
 Obsoletes:      kernel-utils
 BuildRequires:  glib2-devel pkgconfig imake libcap-ng-devel
-Requires:       kernel >= 2.6.32-358.2.1
+Requires:       kernel >= 2.6.32-358.2.1, glib2 >= 2.28
 
 %global _hardened_build 1
 
@@ -36,6 +36,10 @@ Patch12: irqbalance-1.0.8-polscript-doc.patch
 Patch13: irqbalance-1.0.7-banscript-enable.patch
 Patch14: irqbalance-1.0.7-banscript-docs.patch
 Patch15: irqbalance-1.0.8-separate-banned-irqs.patch
+Patch16: irqbalance-1.0.8-fix-cpulist_parse-definition-to-match-bitmap_parseli.patch
+Patch17: irqbalance-1.0.8-import-__bitmap_parselist-from-Linux-kernel.patch
+Patch18: irqbalance-1.0.8-parse-isolcpus-from-proc-cmdline-to-set-up-banned_cp.patch
+
 
 %description
 irqbalance is a daemon that evenly distributes IRQ load across
@@ -58,6 +62,9 @@ multiple CPUs for enhanced performance.
 %patch13 -p1
 %patch14 -p1
 %patch15 -p1
+%patch16 -p1
+%patch17 -p1
+%patch18 -p1
 
 %build
 sh ./autogen.sh
@@ -87,7 +94,9 @@ if [ "$1" = "0" ] ; then
 fi
 
 %post
-/sbin/chkconfig --add irqbalance
+if [ "$1" = "1" ] ; then
+ /sbin/chkconfig --add irqbalance
+fi
 
 %triggerpostun -- kernel-utils
 /sbin/chkconfig --add irqbalance
@@ -95,6 +104,15 @@ exit 0
 
 
 %changelog
+* Tue Feb 02 2016 Petr Holasek <pholasek@redhat.com> - 2:1.0.7-8
+- Explicit dependency on newer glib2 added (bz 1302903)
+
+* Wed Nov 18 2015 Petr Holasek <pholasek@redhat.com> - 2:1.0.7-7
+- Irqbalance doesn't place irq on isolated cpus (bz 1244948)
+
+* Wed Nov 18 2015 Petr Holasek <pholasek@redhat.com> - 2:1.0.7-6
+- Unsolicited irqbalance re-enabling fixed (bz 1273505)
+
 * Thu May 28 2015 Petr Holasek <pholasek@redhat.com> - 2:1.0.7-5
 - Broken banirq handling after rebase fixed (bz 1181720)
 
