@@ -1,0 +1,12 @@
+diff -up irqbalance-1.0.4/classify.c.orig irqbalance-1.0.4/classify.c
+--- irqbalance-1.0.4/classify.c.orig	2013-08-22 17:28:36.504336096 +0200
++++ irqbalance-1.0.4/classify.c	2013-08-22 17:29:36.741379050 +0200
+@@ -321,6 +321,8 @@ void free_irq_db(void)
+ 	for_each_irq(NULL, free_irq, NULL);
+ 	g_list_free(interrupts_db);
+ 	interrupts_db = NULL;
++	g_list_free(rebalance_irq_list);
++	rebalance_irq_list = NULL;
+ }
+ 
+ void rebuild_irq_db(void)

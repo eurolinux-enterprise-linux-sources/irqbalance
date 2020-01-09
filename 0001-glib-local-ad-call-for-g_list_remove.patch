@@ -1,0 +1,93 @@
+From 11277c20cf15e1782b9c53538a6f728060ac814c Mon Sep 17 00:00:00 2001
+From: Neil Horman <nhorman@tuxdriver.com>
+Date: Fri, 31 Aug 2012 13:12:35 -0400
+Subject: [PATCH] glib-local: ad call for g_list_remove
+
+Without it we can't build with older versions of glib2
+
+Also fixed up a misuse of the g_list_remove function
+
+Signed-off-by: Neil Horman <nhorman@tuxdriver.com>
+---
+ classify.c         |  4 ++--
+ glib-local/glist.c | 34 ++++++++++++++++++++++++++++++++++
+ glib-local/glist.h |  2 ++
+ 3 files changed, 38 insertions(+), 2 deletions(-)
+
+diff --git a/classify.c b/classify.c
+index 05b3bfb..587e040 100644
+--- a/classify.c
++++ b/classify.c
+@@ -353,12 +353,12 @@ void rebuild_irq_db(void)
+ 	while(gentry) {
+ 		ninfo = gentry->data;
+ 		iinfo = get_irq_info(ninfo->irq);
+-		new_irq_list = g_list_remove(gentry, ninfo);
++		new_irq_list = g_list_remove(new_irq_list, ninfo);
+ 		if (!iinfo) {
+ 			if (debug_mode)
+ 				printf("Adding untracked IRQ %d to database\n", ninfo->irq);
+ 			interrupts_db = g_list_append(interrupts_db, ninfo);
+-		} else 
++		} else
+ 			free(ninfo);
+ 
+ 		gentry = g_list_first(new_irq_list);
+diff --git a/glib-local/glist.c b/glib-local/glist.c
+index 6fa1761..946e262 100644
+--- a/glib-local/glist.c
++++ b/glib-local/glist.c
+@@ -379,3 +379,37 @@ g_list_find_custom (GList         *list,
+ 
+   return NULL;
+ }
++
++/**
++ * g_list_remove:
++ * @list: a #GList
++ * @data: the data of the element to remove
++ *
++ * Removes an element from a #GList.
++ * If two elements contain the same data, only the first is removed.
++ * If none of the elements contain the data, the #GList is unchanged.
++ *
++ * Returns: the new start of the #GList
++ */
++GList*
++g_list_remove (GList         *list,
++               gconstpointer  data)
++{
++  GList *tmp;
++ 
++  tmp = list;
++  while (tmp)
++    {
++      if (tmp->data != data)
++        tmp = tmp->next;
++      else
++        {
++          list = _g_list_remove_link(list, tmp);
++          g_list_free(tmp);
++
++          break;
++        }
++    }
++  return list;
++}
++
+diff --git a/glib-local/glist.h b/glib-local/glist.h
+index 47f2cfe..19592fa 100644
+--- a/glib-local/glist.h
++++ b/glib-local/glist.h
+@@ -43,6 +43,8 @@ void     g_list_free_full               (GList            *list,
+ GList*   g_list_find_custom             (GList            *list,
+ 					 gconstpointer     data,
+ 					 GCompareFunc      func);
++GList*   g_list_remove                  (GList            *list,
++                                         gconstpointer     data);
+ 
+ #define g_list_previous(list)	        ((list) ? (((GList *)(list))->prev) : NULL)
+ #define g_list_next(list)	        ((list) ? (((GList *)(list))->next) : NULL)
+-- 
+1.7.11.4
+

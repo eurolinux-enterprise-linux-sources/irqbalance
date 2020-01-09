@@ -1,0 +1,219 @@
+Backport of following upstream commits:
+
+a2bd242af43e4e76fe4106737a0320859e283dd1
+1a95c2aabf39ef95caee27fe653323cea88a1209
+42ac16eae13fc45b6a4ee9220c40b3a6153130fc
+1eb0710dfb8b3fe81b885754f40729264ef2ef9e
+4194a69e703767437c76afc627edcb3a51cf41c8
+8e2ea9578ee7791f74b8fce776a5332a72fe9bf7
+2f3c48efabf16f20ab62bb07f12e7acb48bdf178
+b89f13cff17bd75b811aec5b3f97768f47f93472
+--
+diff -up irqbalance-1.0.4/cputree.c.orig irqbalance-1.0.4/cputree.c
+--- irqbalance-1.0.4/cputree.c.orig	2014-06-02 12:11:01.194423427 +0200
++++ irqbalance-1.0.4/cputree.c	2014-06-02 12:11:27.873472120 +0200
+@@ -70,7 +70,7 @@ static struct topo_obj* add_cache_domain
+ 		package = entry->data;
+ 		if (cpus_equal(package_mask, package->mask)) {
+ 			if (packageid != package->number)
+-				log(TO_ALL, LOG_WARNING, "package_mask with different physical_package_id found!\n");
++				syslog(LOG_WARNING, "package_mask with different physical_package_id found!\n");
+ 			break;
+ 		}
+ 		entry = g_list_next(entry);
+@@ -264,17 +264,16 @@ static void do_one_cpu(char *path)
+ 	} while (entry);
+ 	closedir(dir);
+ 
+-	cache = add_cpu_to_cache_domain(cpu, cache_mask);
+-	package = add_cache_domain_to_package(cache, packageid, package_mask);
+-	add_package_to_node(package, nodeid);	
+- 
+ 	/* 
+ 	   blank out the banned cpus from the various masks so that interrupts
+ 	   will never be told to go there
+ 	 */
+-	cpus_and(cpu_cache_domain(cpu)->mask, cpu_cache_domain(cpu)->mask, unbanned_cpus);
+-	cpus_and(cpu_package(cpu)->mask, cpu_package(cpu)->mask, unbanned_cpus);
+-	cpus_and(cpu->mask, cpu->mask, unbanned_cpus);
++	cpus_and(cache_mask, cache_mask, unbanned_cpus);
++	cpus_and(package_mask, package_mask, unbanned_cpus);
++
++	cache = add_cpu_to_cache_domain(cpu, cache_mask);
++	package = add_cache_domain_to_package(cache, packageid, package_mask);
++	add_package_to_node(package, nodeid);
+ 
+ 	cpu->obj_type_list = &cpus;
+ 	cpus = g_list_append(cpus, cpu);
+diff -up irqbalance-1.0.4/irqlist.c.orig irqbalance-1.0.4/irqlist.c
+--- irqbalance-1.0.4/irqlist.c.orig	2014-06-02 12:11:03.000426723 +0200
++++ irqbalance-1.0.4/irqlist.c	2014-06-02 12:11:16.466451300 +0200
+@@ -40,10 +40,11 @@
+ struct load_balance_info {
+ 	unsigned long long int total_load;
+ 	unsigned long long avg_load;
++	unsigned long long min_load;
++	unsigned long long adjustment_load;
+ 	int load_sources;
+ 	unsigned long long int deviations;
+ 	long double std_deviation;
+-	unsigned int num_within;
+ 	unsigned int num_over;
+ 	unsigned int num_under;
+ 	unsigned int num_powersave;
+@@ -54,6 +55,8 @@ static void gather_load_stats(struct top
+ {
+ 	struct load_balance_info *info = data;
+ 
++	if (info->min_load == 0 || obj->load < info->min_load)
++		info->min_load = obj->load;
+ 	info->total_load += obj->load;
+ 	info->load_sources += 1;
+ }
+@@ -72,7 +75,7 @@ static void compute_deviations(struct to
+ 
+ static void move_candidate_irqs(struct irq_info *info, void *data)
+ {
+-	int *remaining_deviation = (int *)data;
++	struct load_balance_info *lb_info = data;
+ 
+ 	/* never move an irq that has an afinity hint when 
+  	 * hint_policy is HINT_POLICY_EXACT 
+@@ -89,11 +92,18 @@ static void move_candidate_irqs(struct i
+ 	if (g_list_length(info->assigned_obj->interrupts) <= 1)
+ 		return;
+ 
+-	/* Stop rebalancing if we've estimated a full reduction of deviation */
+-	if (*remaining_deviation <= 0)
++	/* IRQs with a load of 1 have most likely not had any interrupts and
++	 * aren't worth migrating
++	 */
++	if (info->load <= 1)
+ 		return;
+ 
+-	*remaining_deviation -= info->load;
++	/* If we can migrate an irq without swapping the imbalance do it. */
++	if ((lb_info->adjustment_load - info->load) > (lb_info->min_load + info->load)) {
++		lb_info->adjustment_load -= info->load;
++		lb_info->min_load += info->load;
++	} else
++		return;
+ 
+ 	if (debug_mode)
+ 		printf("Selecting irq %d for rebalancing\n", info->irq);
+@@ -106,54 +116,40 @@ static void move_candidate_irqs(struct i
+ static void migrate_overloaded_irqs(struct topo_obj *obj, void *data)
+ {
+ 	struct load_balance_info *info = data;
+-	int deviation;
+ 
+ 	if (obj->powersave_mode)
+ 		info->num_powersave++;
+ 
+-	/*
+- 	 * Don't rebalance irqs on objects whos load is below the average
+- 	 */
+-	if (obj->load <= info->avg_load) {
+-		if ((obj->load + info->std_deviation) <= info->avg_load) {
+-			info->num_under++;
+-			if (power_thresh != ULONG_MAX && !info->powersave)
+-				if (!obj->powersave_mode)
+-					info->powersave = obj;
+-		} else
+-			info->num_within++; 
+-		return;
++	if ((obj->load + info->std_deviation) <= info->avg_load) {
++		info->num_under++;
++		if (power_thresh != ULONG_MAX && !info->powersave)
++			if (!obj->powersave_mode)
++				info->powersave = obj;
++	} else if ((obj->load - info->std_deviation) >=info->avg_load) {
++		info->num_over++;
+ 	}
+ 
+-	deviation = obj->load - info->avg_load;
+-
+-	if ((deviation > info->std_deviation) &&
++	if ((obj->load > info->min_load) &&
+ 	    (g_list_length(obj->interrupts) > 1)) {
+-
+-		info->num_over++;
+-		/*
+- 		 * We have a cpu that is overloaded and 
+- 		 * has irqs that can be moved to fix that
+- 		 */
+-
+ 		/* order the list from least to greatest workload */
+ 		sort_irq_list(&obj->interrupts);
+ 		/*
+- 		 * Each irq carries a weighted average amount of load
+- 		 * we think its responsible for.  Set deviation to be the load
+- 		 * of the difference between this objects load and the averate,
+- 		 * and migrate irqs until we only have one left, or until that
+- 		 * difference reaches zero
+- 		 */
+-		for_each_irq(obj->interrupts, move_candidate_irqs, &deviation);
+-	} else
+-		info->num_within++;
+-
++		 * Each irq carries a weighted average amount of load
++		 * we think it's responsible for. This object's load is larger
++		 * than the object with the minimum load. Select irqs for
++		 * migration if we could move them to the minimum object
++		 * without reversing the imbalance or until we only have one
++		 * left.
++		 */
++		info->adjustment_load = obj->load;
++		for_each_irq(obj->interrupts, move_candidate_irqs, info);
++	}
+ }
+ 
+ static void force_irq_migration(struct irq_info *info, void *data __attribute__((unused)))
+ {
+ 	migrate_irq(&info->assigned_obj->interrupts, &rebalance_irq_list, info);
++	info->assigned_obj = NULL;
+ }
+ 
+ static void clear_powersave_mode(struct topo_obj *obj, void *data __attribute__((unused)))
+diff -up irqbalance-1.0.4/placement.c.orig irqbalance-1.0.4/placement.c
+--- irqbalance-1.0.4/placement.c.orig	2014-06-02 12:11:05.551431379 +0200
++++ irqbalance-1.0.4/placement.c	2014-06-02 12:11:16.466451300 +0200
+@@ -123,7 +123,7 @@ static void find_best_object_for_irq(str
+ 	place.info = info;
+ 	place.best = NULL;
+ 	place.least_irqs = NULL;
+-	place.best_cost = INT_MAX;
++	place.best_cost = ULLONG_MAX;
+ 
+ 	for_each_object(d->children, find_best_object, &place);
+ 
+@@ -168,7 +168,7 @@ static void place_irq_in_node(struct irq
+ 	}
+ 
+ find_placement:
+-	place.best_cost = INT_MAX;
++	place.best_cost = ULLONG_MAX;
+ 	place.best = NULL;
+ 	place.least_irqs = NULL;
+ 	place.info = info;
+diff -up irqbalance-1.0.4/procinterrupts.c.orig irqbalance-1.0.4/procinterrupts.c
+--- irqbalance-1.0.4/procinterrupts.c.orig	2014-06-02 12:11:09.537438653 +0200
++++ irqbalance-1.0.4/procinterrupts.c	2014-06-02 12:11:16.467451302 +0200
+@@ -198,7 +198,7 @@ void parse_proc_stat(void)
+ 	size_t size = 0;
+ 	int cpunr, rc, cpucount;
+ 	struct topo_obj *cpu;
+-	int irq_load, softirq_load;
++	unsigned long long irq_load, softirq_load;
+ 
+ 	file = fopen("/proc/stat", "r");
+ 	if (!file) {
+@@ -227,7 +227,7 @@ void parse_proc_stat(void)
+ 		if (cpu_isset(cpunr, banned_cpus))
+ 			continue;
+ 
+-		rc = sscanf(line, "%*s %*d %*d %*d %*d %*d %d %d", &irq_load, &softirq_load);
++		rc = sscanf(line, "%*s %*u %*u %*u %*u %*u %llu %llu", &irq_load, &softirq_load);
+ 		if (rc < 2)
+ 			break;	
+ 

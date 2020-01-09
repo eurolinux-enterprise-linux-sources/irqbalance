@@ -1,0 +1,130 @@
+Backport of following upstream commits:
+
+d9a2cf229712b2b2970ce496663521cf9f5f7873
+4540a34b728780985041d8432e580d8000589c76
+5bcb36fbcdcf0e37ea3fb3d7df1963dd910e5f55
+d0517e91e94d69beb09cf720688e35934b052307
+--
+diff -up irqbalance-1.0.4/cputree.c.orig irqbalance-1.0.4/cputree.c
+--- irqbalance-1.0.4/cputree.c.orig	2014-06-02 12:48:56.145610783 +0200
++++ irqbalance-1.0.4/cputree.c	2014-06-02 12:49:27.313669338 +0200
+@@ -31,6 +31,7 @@
+ #include <string.h>
+ #include <unistd.h>
+ #include <sys/types.h>
++#include <sys/stat.h>
+ #include <dirent.h>
+ 
+ #include <glib.h>
+@@ -159,6 +160,7 @@ static void do_one_cpu(char *path)
+ 	struct dirent *entry;
+ 	int nodeid;
+ 	int packageid = 0;
++	unsigned int max_cache_index, cache_index, cache_stat;
+ 
+ 	/* skip offline cpus */
+ 	snprintf(new_path, PATH_MAX, "%s/online", path);
+@@ -228,27 +230,34 @@ static void do_one_cpu(char *path)
+ 	}
+ 
+ 	/* try to read the cache mask; if it doesn't exist assume solitary */
+-	/* We want the deepest cache level available so try index1 first, then index2 */
++	/* We want the deepest cache level available */
+ 	cpu_set(cpu->number, cache_mask);
+-	snprintf(new_path, PATH_MAX, "%s/cache/index1/shared_cpu_map", path);
+-	file = fopen(new_path, "r");
+-	if (file) {
+-		char *line = NULL;
+-		size_t size = 0;
+-		if (getline(&line, &size, file)) 
+-			cpumask_parse_user(line, strlen(line), cache_mask);
+-		fclose(file);
+-		free(line);
+-	}
+-	snprintf(new_path, PATH_MAX, "%s/cache/index2/shared_cpu_map", path);
+-	file = fopen(new_path, "r");
+-	if (file) {
+-		char *line = NULL;
+-		size_t size = 0;
+-		if (getline(&line, &size, file)) 
+-			cpumask_parse_user(line, strlen(line), cache_mask);
+-		fclose(file);
+-		free(line);
++	max_cache_index = 0;
++	cache_index = 1;
++	cache_stat = 0;
++	do {
++		struct stat sb;
++		snprintf(new_path, PATH_MAX, "%s/cache/index%d/shared_cpu_map", path, cache_index);
++		cache_stat = stat(new_path, &sb);
++		if (!cache_stat) {
++			max_cache_index = cache_index;
++			if (max_cache_index == deepest_cache)
++				break;
++			cache_index ++;
++		}
++	} while(!cache_stat);
++
++	if (max_cache_index > 0) {
++		snprintf(new_path, PATH_MAX, "%s/cache/index%d/shared_cpu_map", path, max_cache_index);
++		file = fopen(new_path, "r");
++		if (file) {
++			char *line = NULL;
++			size_t size = 0;
++			if (getline(&line, &size, file))
++				cpumask_parse_user(line, strlen(line), cache_mask);
++			fclose(file);
++			free(line);
++		}
+ 	}
+ 
+ 	nodeid=-1;
+diff -up irqbalance-1.0.4/irqbalance.1.orig irqbalance-1.0.4/irqbalance.1
+--- irqbalance-1.0.4/irqbalance.1.orig	2014-06-02 12:48:59.149616426 +0200
++++ irqbalance-1.0.4/irqbalance.1	2014-06-02 12:49:27.314669340 +0200
+@@ -113,4 +113,13 @@ Forces a rescan of the available irqs an
+ .SH "Homepage"
+ http://code.google.com/p/irqbalance
+ 
++.TP
++.B --deepestcache=<integer>
++This allows a user to specify the cache level at which irqbalance partitions
++cache domains. Without specified, irqbalance searches the available deepest
++cache. This can affect how irqbalance builds up the CPU tree. For example, on
++a system where all the CPU cores being within the same L3 cache domain, one
++can let irqbalance build up the CPU tree on L2 cache by using the following
++command line: 
++.B irqbalance --deepestcache=2
+ 
+diff -up irqbalance-1.0.4/irqbalance.c.orig irqbalance-1.0.4/irqbalance.c
+--- irqbalance-1.0.4/irqbalance.c.orig	2014-06-02 12:48:45.474590734 +0200
++++ irqbalance-1.0.4/irqbalance.c	2014-06-02 12:49:42.860698544 +0200
+@@ -51,6 +51,7 @@ extern cpumask_t banned_cpus;
+ enum hp_e hint_policy = HINT_POLICY_IGNORE;
+ unsigned long power_thresh = ULONG_MAX;
+ unsigned long long cycle_count = 0;
++unsigned long deepest_cache = ULONG_MAX;
+ char *pidfile = NULL;
+ char *banscript = NULL;
+ 
+@@ -270,9 +271,6 @@ int main(int argc, char** argv)
+ 			syslog(LOG_INFO, "%s", msg);
+ 		exit(EXIT_SUCCESS);
+ 	}
+-	/* On dual core/hyperthreading shared cache systems just do a one shot setup */
+-	if (cache_domain_count==1)
+-		one_shot_mode = 1;
+ 
+ 	if (!foreground_mode) {
+ 		int pidfd = -1;
+diff -up irqbalance-1.0.4/irqbalance.h.orig irqbalance-1.0.4/irqbalance.h
+--- irqbalance-1.0.4/irqbalance.h.orig	2014-06-02 12:48:53.601606003 +0200
++++ irqbalance-1.0.4/irqbalance.h	2014-06-02 12:49:27.315669342 +0200
+@@ -68,6 +68,7 @@ extern int need_rescan;
+ extern enum hp_e hint_policy;
+ extern unsigned long long cycle_count;
+ extern unsigned long power_thresh;
++extern unsigned long deepest_cache;
+ extern char *banscript;
+ extern cpumask_t banned_cpus;
+ extern cpumask_t unbanned_cpus;
