@@ -1,6 +1,6 @@
 Name:           irqbalance
 Version:        1.0.7
-Release:        10%{?dist}
+Release:        10%{?dist}.1
 Epoch:          3
 Summary:        IRQ balancing daemon
 
@@ -43,6 +43,7 @@ Patch14:irqbalance-1.0.8-parse-isolcpus-and-nohz-cpus-from-sysfs.patch
 Patch15:irqbalance-1.0.8-Invalid-parsing-for-isolated-and-nohz_full-cpu-masks.patch
 Patch16:irqbalance-1.0.9-irqbalance-set-IRQBALANCE_DEBUG-variable-implies-for.patch
 Patch17:irqbalance-node-package.patch
+Patch18:irqbalance-1.0.8-Balance-correctly-IRQs-reappearing.patch
 
 %description
 irqbalance is a daemon that evenly distributes IRQ load across
@@ -67,6 +68,7 @@ multiple CPUs for enhanced performance.
 %patch15 -p1
 %patch16 -p1
 %patch17 -p1
+%patch18 -p1
 
 %build
 ./autogen.sh
@@ -105,6 +107,10 @@ fi
 /sbin/chkconfig --del irqbalance >/dev/null 2>&1 || :
 
 %changelog
+* Tue Feb 06 2018 Petr Oros <poros@redhat.com> - 3:1.0.7-10.1
+- Balance correctly IRQs reappearing
+- Resolves: #1542450
+
 * Tue May 16 2017 Petr Oros <poros@redhat.com> - 3:1.0.7-10
 - irqbalance node package patch
 - Resolves: #1444195
