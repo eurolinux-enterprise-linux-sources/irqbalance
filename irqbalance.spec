@@ -1,6 +1,6 @@
 Name:           irqbalance
 Version:        1.0.7
-Release:        12%{?dist}
+Release:        6%{?dist}.1
 Epoch:          3
 Summary:        IRQ balancing daemon
 
@@ -41,10 +41,6 @@ Patch12:irqbalance-1.0.8-fix-memory-leak-in-classify-code.patch
 Patch13:irqbalance-1.0.8-separate-cmomand-line-banned-irqs.patch
 Patch14:irqbalance-1.0.8-parse-isolcpus-and-nohz-cpus-from-sysfs.patch
 Patch15:irqbalance-1.0.8-Invalid-parsing-for-isolated-and-nohz_full-cpu-masks.patch
-Patch16:irqbalance-1.0.9-irqbalance-set-IRQBALANCE_DEBUG-variable-implies-for.patch
-Patch17:irqbalance-node-package.patch
-Patch18:irqbalance-1.0.8-Balance-correctly-IRQs-reappearing.patch
-Patch19:irqbalance-1.5.0-Refine-document-about-IRQBALANCE_BANNED_CPUS.patch
 
 %description
 irqbalance is a daemon that evenly distributes IRQ load across
@@ -67,10 +63,6 @@ multiple CPUs for enhanced performance.
 %patch13 -p1
 %patch14 -p1
 %patch15 -p1
-%patch16 -p1
-%patch17 -p1
-%patch18 -p1
-%patch19 -p1
 
 %build
 ./autogen.sh
@@ -109,29 +101,9 @@ fi
 /sbin/chkconfig --del irqbalance >/dev/null 2>&1 || :
 
 %changelog
-* Fri Mar 1 2019 Kairui Song <kasong@redhat.com> - 3:1.0.7-12
-- Refine document for IRQBALANCE_BANNED_CPUS
-- Resolves: #1361654
-
-* Mon Feb 05 2018 Petr Oros <poros@redhat.com> - 3:1.0.7-11
-- Balance correctly IRQs reappearing
-- Resolves: #1536373
-
-* Tue May 16 2017 Petr Oros <poros@redhat.com> - 3:1.0.7-10
-- irqbalance node package patch
-- Resolves: #1444195
-
-* Tue Apr 4 2017 Petr Oros <poros@redhat.com> - 3:1.0.7-9
-- set IRQBALANCE_DEBUG variable implies foreground mode
-- Resolves: #1361211
-
-* Tue Dec 20 2016 Petr Oros <poros@redhat.com> - 3:1.0.7-8
-- Fix Epoch in version
-- Resolves: #1393539
-
-* Wed Nov 30 2016 Petr Oros <poros@redhat.com> - 2:1.0.7-7
+* Tue Dec 20 2016 Petr Oros <poros@redhat.com> - 2:1.0.7-6.1
 - Fix Invalid parsing for isolated and nohz_full cpu masks
-- Resolves: #1393539
+- Resolves: #1406291
 
 * Tue Feb 02 2016 Petr Holasek <pholasek@redhat.com> - 2:1.0.7-6
 - nohz and isolated cpus are read from sysfs (#1264130)
