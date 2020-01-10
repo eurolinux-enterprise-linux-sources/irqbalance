@@ -1,6 +1,6 @@
 Name:           irqbalance
 Version:        1.0.7
-Release:        10%{?dist}.1
+Release:        11%{?dist}
 Epoch:          3
 Summary:        IRQ balancing daemon
 
@@ -107,9 +107,9 @@ fi
 /sbin/chkconfig --del irqbalance >/dev/null 2>&1 || :
 
 %changelog
-* Tue Feb 06 2018 Petr Oros <poros@redhat.com> - 3:1.0.7-10.1
+* Mon Feb 05 2018 Petr Oros <poros@redhat.com> - 3:1.0.7-11
 - Balance correctly IRQs reappearing
-- Resolves: #1542450
+- Resolves: #1536373
 
 * Tue May 16 2017 Petr Oros <poros@redhat.com> - 3:1.0.7-10
 - irqbalance node package patch
